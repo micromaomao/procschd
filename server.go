@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"github.com/Workiva/go-datastructures/queue"
@@ -27,9 +28,10 @@ type Server struct {
 	numThreadsDesired uint32
 	threadAlterLock   sync.Mutex
 	dockercli         *dockerClient.Client
+	authToken         string
 }
 
-func NewServer(d *dockerClient.Client) *Server {
+func NewServer(d *dockerClient.Client, authToken string) *Server {
 	serv := &Server{}
 	serv.taskIdIncrement = 0
 	serv.taskQueue = queue.New(10)
@@ -39,6 +41,7 @@ func NewServer(d *dockerClient.Client) *Server {
 	serv.numThreadsDesired = 3
 	serv.threadAlterLock = sync.Mutex{}
 	serv.dockercli = d
+	serv.authToken = authToken
 	serv.EnsureRunnerThread()
 	go func() {
 		for {
@@ -90,6 +93,23 @@ func (s *Server) EnsureRunnerThread() {
 
 func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	log.Printf("%v %v", req.Method, req.URL.RequestURI())
+	if s.authToken != "" {
+		authHeader := req.Header["Authorization"]
+		if len(authHeader) != 1 {
+			rw.WriteHeader(401)
+			return
+		}
+		authHeaderStrs := strings.Split(authHeader[0], " ")
+		if len(authHeaderStrs) != 2 || authHeaderStrs[0] != "Bearer" {
+			rw.WriteHeader(401)
+			return
+		}
+		clientToken := authHeaderStrs[1]
+		if subtle.ConstantTimeCompare([]byte(clientToken), []byte(s.authToken)) != 1 {
+			rw.WriteHeader(401)
+			return
+		}
+	}
 	defer func() {
 		p := recover()
 		if p != nil {

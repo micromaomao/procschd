@@ -16,16 +16,21 @@ import (
 
 func main() {
 	log.SetOutput(os.Stdout)
-	var dockerAddr, listenAddr, dockerVersion string
+	var dockerAddr, listenAddr, dockerVersion, authToken string
 	pflag.StringVar(&dockerAddr, "docker", "unix:/var/run/docker.sock", "Either: unix:/path/to/docker/socket\n    Or: tcp:host:port")
 	pflag.StringVar(&listenAddr, "listen", "unix:/run/procschd.sock", "Either: unix:/path/to/bind/point\n    Or: tcp:addr:port")
 	pflag.StringVar(&dockerVersion, "docker-version", "", "Specify API version used by docker. Leave empty for latest.")
+	pflag.StringVar(&authToken, "auth-token", "", "An optional string. If specified, clients connecting to this server must present the header Authorization: Bearer <token>")
 	pflag.Parse()
+	if strings.ContainsAny(authToken, " \n\t") {
+		log.Fatalf("Auth token can't contain spaces, newlines or \\t s.")
+		return
+	}
 	dockercli, err := initDockerClient(dockerAddr, dockerVersion)
 	if err != nil {
 		log.Fatalf("When creating docker client: " + err.Error())
 	}
-	err = serve(listenAddr, dockercli)
+	err = serve(listenAddr, dockercli, authToken)
 	if err != nil {
 		log.Fatalf(err.Error())
 	}
@@ -59,7 +64,7 @@ func initDockerClient(dockerAddr, dockerVersion string) (client *dockerClient.Cl
 	return
 }
 
-func serve(listenAddr string, d *dockerClient.Client) (err error) {
+func serve(listenAddr string, d *dockerClient.Client, authToken string) (err error) {
 	proto, host, err := protoHostFromAddr(listenAddr)
 	if err != nil {
 		return
@@ -78,7 +83,7 @@ func serve(listenAddr string, d *dockerClient.Client) (err error) {
 		}
 	}
 	httpSrv := http.Server{}
-	srv := NewServer(d)
+	srv := NewServer(d, authToken)
 	httpSrv.Handler = srv
 	l, err := net.Listen(proto, host)
 	if err != nil {
