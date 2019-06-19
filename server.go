@@ -9,6 +9,7 @@ import (
 	"github.com/Workiva/go-datastructures/queue"
 	dockerClient "github.com/docker/docker/client"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"runtime"
@@ -22,8 +23,7 @@ import (
 type Server struct {
 	taskQueue         *queue.Queue
 	taskIdIncrement   uint64
-	taskStore         map[uint64]*Task
-	taskStoreLock     sync.Mutex
+	taskStore         sync.Map
 	numThreads        uint32
 	numThreadsDesired uint32
 	threadAlterLock   sync.Mutex
@@ -35,8 +35,7 @@ func NewServer(d *dockerClient.Client, authToken string) *Server {
 	serv := &Server{}
 	serv.taskIdIncrement = 0
 	serv.taskQueue = queue.New(10)
-	serv.taskStore = make(map[uint64]*Task)
-	serv.taskStoreLock = sync.Mutex{}
+	serv.taskStore = sync.Map{}
 	serv.numThreads = 0
 	serv.numThreadsDesired = 3
 	serv.threadAlterLock = sync.Mutex{}
@@ -54,6 +53,15 @@ func NewServer(d *dockerClient.Client, authToken string) *Server {
 		}
 	}()
 	return serv
+}
+
+func (s *Server) CleanUp() {
+	s.taskQueue.Dispose()
+	s.taskStore.Range(func(k, v interface{}) bool {
+		t := v.(*Task)
+		t.cleanup()
+		return true
+	})
 }
 
 func (s *Server) getNewTaskId() uint64 {
@@ -173,51 +181,93 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 				rw.Write([]byte("Expected only one ?wait."))
 				return
 			}
-			s.taskStoreLock.Lock()
-			t := s.taskStore[id]
-			s.taskStoreLock.Unlock()
-			if t == nil {
+			_t, ok := s.taskStore.Load(id)
+			if !ok {
 				rw.WriteHeader(404)
 				return
-			} else {
-				if doWait {
-					t.wait()
+			}
+			t := _t.(*Task)
+			if doWait {
+				t.wait()
+			}
+			t.lock.RLock()
+			defer t.lock.RUnlock()
+			rw.Header()["Content-Type"] = []string{"text/json"}
+			rw.WriteHeader(200)
+			tErr := ""
+			if t.err != nil {
+				if err, ok := t.err.(error); ok {
+					tErr = err.Error()
+				} else if err, ok := t.err.(string); ok {
+					tErr = err
+				} else {
+					tErr = "Unknow error"
 				}
-				t.lock.RLock()
-				defer t.lock.RUnlock()
-				rw.Header()["Content-Type"] = []string{"text/json"}
-				rw.WriteHeader(200)
-				tErr := ""
-				if t.err != nil {
-					if err, ok := t.err.(error); ok {
-						tErr = err.Error()
-					} else if err, ok := t.err.(string); ok {
-						tErr = err
-					} else {
-						tErr = "Unknow error"
-					}
-				}
-				jsonBytes, err := json.Marshal(TaskResponse{
-					Id:        t.id,
-					Completed: t.completed,
-					Error:     tErr,
-					Stdout:    string(t.stdout),
-					Stderr:    string(t.stderr),
-				})
-				if err != nil {
-					responseWithError(err, req, rw)
-					return
-				}
-				rw.Write(jsonBytes)
+			}
+			jsonBytes, err := json.Marshal(TaskResponse{
+				Id:        t.id,
+				Completed: t.completed,
+				Error:     tErr,
+				Stdout:    string(t.stdout),
+				Stderr:    string(t.stderr),
+				Artifacts: t.artifacts,
+			})
+			if err != nil {
+				responseWithError(err, req, rw)
 				return
 			}
+			rw.Write(jsonBytes)
+			return
+		}
+		if path == "/task/artifact" {
+			query := req.URL.Query()
+			id, err := strconv.ParseUint(query.Get("id"), 10, 64)
+			if err != nil {
+				rw.WriteHeader(400)
+				rw.Write([]byte(err.Error()))
+				return
+			}
+			_t, ok := s.taskStore.Load(id)
+			if !ok {
+				rw.WriteHeader(404)
+				rw.Write([]byte("No such task."))
+				return
+			}
+			t := _t.(*Task)
+			artifactPath := query.Get("path")
+			t.lock.RLock()
+			defer t.lock.RUnlock()
+			if !t.completed {
+				rw.WriteHeader(404)
+				rw.Write([]byte("Task not completed."))
+				return
+			}
+			artifactStream, ok := t.artifactsMap[artifactPath]
+			if !ok {
+				rw.WriteHeader(404)
+				rw.Write([]byte("No such artifact."))
+				return
+			}
+			stream, err := artifactStream.getStream()
+			if err != nil {
+				rw.WriteHeader(500)
+				rw.Write([]byte(err.Error()))
+				return
+			}
+			rw.Header()["Content-Type"] = []string{} // Do not send Content-Type because we don't know the type.
+			rw.Header()["Content-Length"] = []string{strconv.FormatInt(artifactStream.length, 10)}
+			rw.WriteHeader(200)
+			io.Copy(rw, stream)
+			stream.Close()
+			return
 		}
 		rw.WriteHeader(404)
 		return
 	case "POST":
 		if path == "/task" {
 			var imageId string
-			var stdin io.Reader
+			var stdin io.ReadCloser
+			var artifacts []string = make([]string, 0)
 			contentTypeArr := req.Header["Content-Type"]
 			if len(contentTypeArr) != 1 {
 				rw.WriteHeader(400)
@@ -249,8 +299,10 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 					rw.Write([]byte("Expected stdin to be a string."))
 					return
 				} else if len(stdinStrArr) == 1 {
-					stdin = bytes.NewReader([]byte(stdinStrArr[0]))
+					stdin = ioutil.NopCloser(bytes.NewReader([]byte(stdinStrArr[0])))
 				}
+
+				artifacts = req.Form["artifacts"]
 			case "multipart/form-data":
 				err := req.ParseMultipartForm(1 << 24) // 16 MB
 				defer req.MultipartForm.RemoveAll()    // Deleting files on disk don't close fd on linux, so saved streams can still be read later.
@@ -284,7 +336,7 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 				} else if len(stdinArr) == 0 {
 					stdinStrArr := req.MultipartForm.Value["stdin"]
 					if len(stdinStrArr) == 1 {
-						stdin = bytes.NewReader([]byte(stdinStrArr[0]))
+						stdin = ioutil.NopCloser(bytes.NewReader([]byte(stdinStrArr[0])))
 					} else if len(stdinArr) != 0 {
 						rw.WriteHeader(400)
 						rw.Write([]byte("Expected stdin to be a string."))
@@ -295,6 +347,8 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 					rw.Write([]byte("Expected stdin to be one file."))
 					return
 				}
+
+				artifacts = req.MultipartForm.Value["artifacts"]
 			default:
 				rw.WriteHeader(400)
 				rw.Write([]byte("Invalid Content-Type. Expected either application/x-www-form-urlencoded or multipart/form-data."))
@@ -305,12 +359,23 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 				rw.Write([]byte("Empty imageId?"))
 				return
 			}
+			if artifacts == nil {
+				artifacts = make([]string, 0)
+			}
+			for _, artifact := range artifacts {
+				if len(artifact) == 0 || artifact[0] != '/' {
+					rw.WriteHeader(400)
+					rw.Write([]byte("Artifact paths must be absolute."))
+					return
+				}
+			}
 			t := s.newTask()
 			defer t.lock.Unlock()
 			t.imageId = imageId
+			t.artifacts = artifacts
 			t.stdin = stdin
 			if stdin == nil {
-				t.stdin = bytes.NewReader([]byte{})
+				t.stdin = ioutil.NopCloser(bytes.NewReader([]byte{}))
 			}
 			err := s.taskQueue.Put(t)
 			if err != nil {
@@ -318,9 +383,7 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 				rw.Write([]byte(err.Error()))
 				return
 			}
-			s.taskStoreLock.Lock()
-			s.taskStore[t.id] = t
-			s.taskStoreLock.Unlock()
+			s.taskStore.Store(t.id, t)
 			rw.Header()["Content-Type"] = []string{"text/plain"}
 			rw.WriteHeader(200)
 			rw.Write([]byte(strconv.FormatUint(t.id, 10)))

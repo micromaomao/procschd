@@ -7,9 +7,10 @@ type StatResponse struct {
 }
 
 type TaskResponse struct {
-	Id        uint64 `json:"id"`
-	Completed bool   `json:"completed"`
-	Error     string `json:"error,omitempty"`
-	Stdout    string `json:"stdout"`
-	Stderr    string `json:"stderr"`
+	Id        uint64   `json:"id"`
+	Completed bool     `json:"completed"`
+	Error     string   `json:"error,omitempty"`
+	Stdout    string   `json:"stdout"`
+	Stderr    string   `json:"stderr"`
+	Artifacts []string `json:"artifacts"`
 }

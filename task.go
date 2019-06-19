@@ -9,6 +9,7 @@ import (
 	"github.com/docker/docker/pkg/stdcopy"
 	"io"
 	"log"
+	"os"
 	"runtime"
 	"strconv"
 	"sync"
@@ -26,12 +27,14 @@ type Task struct {
 
 	containerId string
 	imageId     string
-	stdin       io.Reader
+	artifacts   []string
+	stdin       io.ReadCloser
 	startTime   time.Time
 
-	err    interface{}
-	stdout []byte
-	stderr []byte
+	err          interface{}
+	stdout       []byte
+	stderr       []byte
+	artifactsMap map[string]ArtifactStream
 }
 
 // This function return *Task with its lock locked.
@@ -106,9 +109,11 @@ func (t *Task) do(ctx context.Context) {
 	}
 	t.lock.RLock()
 	if t.stdin != nil {
+		stdin := t.stdin
 		go func() {
-			io.Copy(conn.Conn, t.stdin)
+			io.Copy(conn.Conn, stdin)
 			conn.CloseWrite()
+			stdin.Close()
 		}()
 	}
 	containerId := t.containerId
@@ -182,10 +187,15 @@ func (t *Task) do(ctx context.Context) {
 				t.completed = true
 				t.lock.Unlock()
 			} else {
-				t.lock.Lock()
-				// TODO: final work
 				// Here: t.err may had been set by the goroutine doing StdCopy, otherwise it is nil.
+				am, err := t.getArtifacts(ctx)
+				t.lock.Lock()
 				t.completed = true
+				if err != nil {
+					t.err = errors.New("Failed to get artifacts: " + err.Error())
+				} else {
+					t.artifactsMap = am
+				}
 				t.lock.Unlock()
 			}
 		}
@@ -206,6 +216,22 @@ func (t *Task) cancel() {
 		t.completed = true
 		t.lock.Unlock()
 		return
+	}
+}
+
+func (t *Task) cleanup() {
+	t.cancel()
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	if t.artifactsMap != nil {
+		for _, as := range t.artifactsMap {
+			os.Remove(as.file.Name())
+			as.file.Close()
+		}
+		t.artifactsMap = nil
+	}
+	if t.stdin != nil {
+		t.stdin.Close()
 	}
 }
 
@@ -254,9 +280,7 @@ func (t *Task) createContainer(ctx context.Context) (err error) {
 		Labels:          labels,
 		StopSignal:      "SIGKILL",
 		StopTimeout:     &one,
-	}, &container.HostConfig{
-		AutoRemove: true,
-	}, nil, "")
+	}, &container.HostConfig{}, nil, "")
 	if err != nil {
 		return
 	}

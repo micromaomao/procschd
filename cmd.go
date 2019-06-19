@@ -10,7 +10,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -89,6 +91,16 @@ func serve(listenAddr string, d *dockerClient.Client, authToken string) (err err
 	if err != nil {
 		return
 	}
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		for {
+			<-signalChan
+			log.Printf("Cleaning up...")
+			srv.CleanUp()
+			os.Exit(0)
+		}
+	}()
 	err = httpSrv.Serve(l)
 	return
 }
