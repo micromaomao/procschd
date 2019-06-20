@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::string::String;
 use std::mem;
 use std::process::Command;
-use std::os::unix::process::CommandExt;
+use std::fmt;
 
 fn exit<E: std::fmt::Display>(err: E) -> ! {
   let _ = std::io::stderr().write_fmt(format_args!("Error: {}", err));
@@ -57,9 +57,13 @@ fn main () {
     }
   };
   for token in tokens {
-    let tokenUrlEncodeded = token; // TODO
+    let tokenEscaped = escape_token(token.chars());
+    if let Err(e) = tokenEscaped {
+      exit(format!("Error with token {}: {}", token, e));
+    }
+    let tokenEscaped = tokenEscaped.unwrap();
     currentPageLatex.borrow_mut().push_str(&format!("\\begin{{scope}}[shift={{({}mm,{}mm)}}]\n  \
-                                      \\slitcontent{{{}}}{{{}}}\n\\end{{scope}}\n", cX, cY, token, tokenUrlEncodeded));
+                                      \\slitcontent{{{}}}{{{}}}\n\\end{{scope}}\n", cX, cY, token, tokenEscaped));
     if cX + xInc*2 < pageW {
       cX += xInc;
     } else {
@@ -93,4 +97,35 @@ fn main () {
   if !res.success() {
     exit(format!("dvipdf failed with code {}", res.code().unwrap_or(-1)));
   }
+}
+
+#[derive(Debug)]
+struct EscapeTokenError {
+  the_char: char
+}
+
+impl fmt::Display for EscapeTokenError {
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    write!(f, "Invalid char {} in base64 string.", self.the_char)
+  }
+}
+
+impl std::error::Error for EscapeTokenError {}
+
+fn escape_token<C: std::iter::Iterator<Item = char>>(chars: C) -> Result<String, EscapeTokenError> {
+  let mut res = String::new();
+  for c in chars {
+    if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+      res.push(c)
+    } else if c == '/' {
+      res.push_str("\\%2F")
+    } else if c == '+' {
+      res.push_str("\\%2B")
+    } else if c == '=' {
+      res.push_str("\\%3D")
+    } else {
+      return Err(EscapeTokenError{the_char: c})
+    }
+  }
+  return Ok(res)
 }
