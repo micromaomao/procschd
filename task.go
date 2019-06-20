@@ -24,6 +24,7 @@ type Task struct {
 	completed      bool
 	cancelFunc     context.CancelFunc
 	cancelChan     <-chan struct{}
+	startWaitChan  chan struct{}
 
 	containerId string
 	imageId     string
@@ -48,6 +49,8 @@ func (s *Server) newTask() *Task {
 		completed:      false,
 		cancelFunc:     nil,
 
+		startWaitChan: make(chan struct{}, 1), // so that those who wait()ed before task was picked up by a runner thread can wait for the task to complete.
+
 		stdout: []byte{},
 		stderr: []byte{},
 	}
@@ -57,6 +60,8 @@ func (s *Server) newTask() *Task {
 
 func (t *Task) do(ctx context.Context) {
 	t.lock.Lock()
+	close(t.startWaitChan)
+	t.startWaitChan = nil
 	if t.completed {
 		t.lock.Unlock()
 		return
@@ -150,23 +155,26 @@ func (t *Task) do(ctx context.Context) {
 	go func() {
 		stdoutBuf := bytes.NewBuffer(make([]byte, 0, 2<<20))
 		stderrBuf := bytes.NewBuffer(make([]byte, 0, 2<<20))
-		n, err := stdcopy.StdCopy(stdoutBuf, stderrBuf, conn.Reader)
-		if err == nil {
-			log.Printf("Got %v bytes from stdio.", n)
-		} else {
+		_, err := stdcopy.StdCopy(stdoutBuf, stderrBuf, conn.Reader)
+		if err != nil {
 			log.Printf("Error from StdCopy: %v", err)
 		}
 		t.lock.Lock()
 		t.stdout = stdoutBuf.Bytes()
 		t.stderr = stderrBuf.Bytes()
-		t.err = err
 		t.lock.Unlock()
 		stdioWg.Done()
 	}()
-	log.Printf("Waiting")
 	select {
 	case err := <-errChan:
 		if err != nil {
+			snd := time.Second
+			stopErr := docker.ContainerStop(context.Background(), containerId, &snd)
+			if stopErr == nil {
+				stdioWg.Wait() // wait for stdout/stderr to be populated.
+			} else {
+				log.Printf("Error stopping container %v: %v", containerId, stopErr.Error())
+			}
 			t.lock.Lock()
 			t.err = errors.New("Error returned by ContainerWait: " + err.Error())
 			t.completed = true
@@ -176,6 +184,13 @@ func (t *Task) do(ctx context.Context) {
 	case wBody := <-containerWaitChan:
 		err := wBody.Error
 		if err != nil {
+			snd := time.Second
+			stopErr := docker.ContainerStop(context.Background(), containerId, &snd)
+			if stopErr == nil {
+				stdioWg.Wait() // wait for stdout/stderr to be populated.
+			} else {
+				log.Printf("Error stopping container %v: %v", containerId, stopErr.Error())
+			}
 			t.lock.Lock()
 			t.err = errors.New("Error returned by ContainerWait: " + err.Message)
 			t.completed = true
@@ -243,10 +258,17 @@ func (t *Task) wait() {
 		t.lock.RUnlock()
 		return
 	}
+	startWaitChan := t.startWaitChan
 	cancelChan := t.cancelChan
 	t.lock.RUnlock()
 	if cancelChan == nil {
-		return
+		if startWaitChan == nil {
+			return
+		} else {
+			<-startWaitChan
+			t.wait()
+			return
+		}
 	} else {
 		for {
 			<-cancelChan
