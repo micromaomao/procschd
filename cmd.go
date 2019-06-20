@@ -22,11 +22,23 @@ func main() {
 	pflag.StringVar(&dockerAddr, "docker", "unix:/var/run/docker.sock", "Either: unix:/path/to/docker/socket\n    Or: tcp:host:port")
 	pflag.StringVar(&listenAddr, "listen", "unix:/run/procschd.sock", "Either: unix:/path/to/bind/point\n    Or: tcp:addr:port")
 	pflag.StringVar(&dockerVersion, "docker-version", "", "Specify API version used by docker. Leave empty for latest.")
-	pflag.StringVar(&authToken, "auth-token", "", "An optional string. If specified, clients connecting to this server must present the header Authorization: Bearer <token>")
+	pflag.StringVar(&authToken, "auth-token", "", "An optional string. If specified, clients connecting to this server must present the header Authorization: Bearer <token>\n"+
+		"Alternatively, an environment variable PROCSCHD_AUTH_TOKEN can be used.")
 	pflag.Parse()
+	envAuthToken := os.Getenv("PROCSCHD_AUTH_TOKEN")
+	if authToken != "" && envAuthToken != "" {
+		log.Fatalf("Both environment variable PROCSCHD_AUTH_TOKEN and argument --auth-token specified. Which should I use?")
+		return
+	}
+	if authToken == "" && envAuthToken != "" {
+		authToken = envAuthToken
+	}
 	if strings.ContainsAny(authToken, " \n\t") {
 		log.Fatalf("Auth token can't contain spaces, newlines or \\t s.")
 		return
+	}
+	if authToken != "" {
+		log.Printf("Requiring Authentication.")
 	}
 	dockercli, err := initDockerClient(dockerAddr, dockerVersion)
 	if err != nil {
