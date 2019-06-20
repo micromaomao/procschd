@@ -292,8 +292,9 @@ func (t *Task) createContainer(ctx context.Context) (err error) {
 	imageId := t.imageId
 	t.lock.RUnlock()
 	one := 1
+	ten := int64(10)
 	res, err := docker.ContainerCreate(ctx, &container.Config{
-		User:            "nobody:nobody",
+		User:            "65534:65534",
 		AttachStdin:     true,
 		AttachStdout:    true,
 		AttachStderr:    true,
@@ -304,7 +305,14 @@ func (t *Task) createContainer(ctx context.Context) (err error) {
 		Labels:          labels,
 		StopSignal:      "SIGKILL",
 		StopTimeout:     &one,
-	}, &container.HostConfig{}, nil, "")
+	}, &container.HostConfig{
+		Resources: container.Resources{
+			Memory:     1 << 30, // 1 GiB
+			MemorySwap: 1 << 30,
+			NanoCPUs:   1000000000, // 10^9 nCPUs = 1 CPU. This is not some sort of time limit, but limit on how many CPUs to allocate to the container.
+			PidsLimit:  &ten,
+		},
+	}, nil, "")
 	if err != nil {
 		return
 	}
