@@ -122,11 +122,13 @@ func (t *Task) do(ctx context.Context) {
 
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*2)
-		docker.ContainerRemove(ctx, containerId, types.ContainerRemoveOptions{
+		err := docker.ContainerRemove(ctx, containerId, types.ContainerRemoveOptions{
 			RemoveVolumes: true,
-			RemoveLinks:   true,
 			Force:         true,
 		})
+		if err != nil {
+			log.Printf("Unable to remove container %v: %v", containerId, err.Error())
+		}
 		cancel()
 	}()
 
