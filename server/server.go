@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"runtime"
 	"strconv"
@@ -154,6 +155,11 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			imageId := query.Get("id")
 			ispect, _, err := s.dockercli.ImageInspectWithRaw(context.Background(), imageId)
 			if err != nil {
+				if dockerClient.IsErrNotFound(err) {
+					rw.WriteHeader(404)
+					rw.Write([]byte("Image not found."))
+					return
+				}
 				responseWithError(err, req, rw)
 				return
 			}
@@ -244,6 +250,11 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			}
 			artifactStream, ok := t.artifactsMap[artifactPath]
 			if !ok {
+				if t.err != nil {
+					rw.WriteHeader(404)
+					rw.Write([]byte("Task failed, so artifacts not available."))
+					return
+				}
 				rw.WriteHeader(404)
 				rw.Write([]byte("No such artifact."))
 				return
@@ -276,6 +287,7 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			}
 			contentType := contentTypeArr[0]
 			contentType = strings.SplitN(contentType, ";", 2)[0]
+			var uploadsArr []*multipart.FileHeader = nil
 			switch contentType {
 			case "application/x-www-form-urlencoded":
 				err := req.ParseForm()
@@ -349,6 +361,7 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 				}
 
 				artifacts = req.MultipartForm.Value["artifacts"]
+				uploadsArr = req.MultipartForm.File["uploads"]
 			default:
 				rw.WriteHeader(400)
 				rw.Write([]byte("Invalid Content-Type. Expected either application/x-www-form-urlencoded or multipart/form-data."))
@@ -377,12 +390,38 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			if stdin == nil {
 				t.stdin = ioutil.NopCloser(bytes.NewReader([]byte{}))
 			}
+			if uploadsArr != nil {
+				t.uploads_lock.Lock()
+				defer t.uploads_lock.Unlock()
+				for _, uploadFile := range uploadsArr {
+					path := uploadFile.Filename
+					if len(path) == 0 || path[0] != '/' {
+						rw.WriteHeader(400)
+						rw.Write([]byte("Paths must be absolute."))
+						t.cleanup()
+						return
+					}
+					data, err := uploadFile.Open()
+					if err != nil {
+						rw.WriteHeader(500)
+						rw.Write([]byte(err.Error()))
+						t.cleanup()
+						return
+					}
+					t.uploads = append(t.uploads, Upload{
+						path:   path,
+						data:   data,
+						length: uploadFile.Size,
+					})
+				}
+			}
 			err := s.taskQueue.Put(t)
 			if err != nil {
 				rw.WriteHeader(500)
 				rw.Write([]byte(err.Error()))
 				return
 			}
+			log.Printf("Created task %v running %v", t.id, t.imageId)
 			s.taskStore.Store(t.id, t)
 			rw.Header()["Content-Type"] = []string{"text/plain"}
 			rw.WriteHeader(200)

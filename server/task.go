@@ -26,11 +26,13 @@ type Task struct {
 	cancelChan     <-chan struct{}
 	startWaitChan  chan struct{}
 
-	containerId string
-	imageId     string
-	artifacts   []string
-	stdin       io.ReadCloser
-	startTime   time.Time
+	containerId  string
+	imageId      string
+	artifacts    []string
+	stdin        io.ReadCloser
+	uploads      []Upload
+	uploads_lock *sync.RWMutex
+	startTime    time.Time
 
 	err          interface{}
 	stdout       []byte
@@ -50,6 +52,9 @@ func (s *Server) newTask() *Task {
 		cancelFunc:     nil,
 
 		startWaitChan: make(chan struct{}, 1), // so that those who wait()ed before task was picked up by a runner thread can wait for the task to complete.
+
+		uploads:      make([]Upload, 0),
+		uploads_lock: &sync.RWMutex{},
 
 		stdout: []byte{},
 		stderr: []byte{},
@@ -93,6 +98,11 @@ func (t *Task) do(ctx context.Context) {
 			return
 		} else {
 			cancel()
+			t.lock.RLock()
+			if t.err != nil {
+				log.Printf("Task %v failed: %v", t.id, t.err)
+			}
+			t.lock.RUnlock()
 		}
 	}()
 
@@ -104,6 +114,16 @@ func (t *Task) do(ctx context.Context) {
 		t.lock.Unlock()
 		return
 	}
+
+	err = t.copyUploads(ctx)
+	if err != nil {
+		t.lock.Lock()
+		t.err = errors.New("Unable to copy uploads into container: " + err.Error())
+		t.completed = true
+		t.lock.Unlock()
+		return
+	}
+
 	conn, err := t.attachContainer(ctx)
 	if err != nil {
 		t.lock.Lock()
@@ -250,6 +270,12 @@ func (t *Task) cleanup() {
 	if t.stdin != nil {
 		t.stdin.Close()
 	}
+	for _, f := range t.uploads {
+		if f.data != nil {
+			f.data.Close()
+		}
+	}
+	t.uploads = nil
 }
 
 func (t *Task) wait() {
