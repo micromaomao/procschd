@@ -115,7 +115,7 @@ impl std::error::Error for EscapeTokenError {}
 fn escape_token<C: std::iter::Iterator<Item = char>>(chars: C) -> Result<String, EscapeTokenError> {
   let mut res = String::new();
   for c in chars {
-    if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+    if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
       res.push(c)
     } else if c == '/' {
       res.push_str("\\%2F")
