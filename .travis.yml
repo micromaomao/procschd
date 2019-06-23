@@ -1,0 +1,41 @@
+language: node_js
+sudo: required
+dist: stretch
+group: edge
+node_js:
+  - "10"
+go:
+  - "1.x"
+services:
+  - docker
+install:
+  - npm install -g npm@latest
+  - go version
+  - node -v
+  - docker version
+script:
+  - >
+    PROJECT_ROOT=$(pwd);
+    cd server;
+    SRC_IN_GOPATH=$(pwd)/build_gopath/src/github.com/micromaomao/procschd/server;
+    GOPATH=$(pwd)/build_gopath;
+    export GOPATH;
+    mkdir -p $SRC_IN_GOPATH &&
+    cd $SRC_IN_GOPATH &&
+    cp $PROJECT_ROOT/server/*.go . &&
+    go get -v &&
+    go build &&
+    cp ./server $GOPATH/.. &&
+    cd $PROJECT_ROOT/clients/node &&
+    npm i &&
+    npm run prepublishOnly;
+    if [ $? -ne 0 ]; then exit 1; fi;
+    export UNIX_SOCKET_PATH=/run/procschd.sock;
+    sudo $PROJECT_ROOT/server/server --docker-api-version=1.38 --listen=unix:$UNIX_SOCKET_PATH &
+    sleep 1 &&
+    sudo chmod a+rw $UNIX_SOCKET_PATH &&
+    cd $PROJECT_ROOT/images &&
+    sudo docker build . -f bash.Dockerfile -t runner/bash &&
+    sudo docker build . -f demo.Dockerfile -t runner/demo &&
+    cd $PROJECT_ROOT/clients/node &&
+    npm run test;
