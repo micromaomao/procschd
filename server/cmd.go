@@ -3,9 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	dockerClient "github.com/docker/docker/client"
-	"github.com/docker/go-connections/sockets"
-	"github.com/spf13/pflag"
 	"log"
 	"net"
 	"net/http"
@@ -14,14 +11,18 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	dockerClient "github.com/docker/docker/client"
+	"github.com/docker/go-connections/sockets"
+	"github.com/spf13/pflag"
 )
 
 func main() {
 	log.SetOutput(os.Stdout)
-	var dockerAddr, listenAddr, dockerVersion, authToken string
+	var dockerAddr, listenAddr, dockerApiVersion, authToken string
 	pflag.StringVar(&dockerAddr, "docker", "unix:/var/run/docker.sock", "Either: unix:/path/to/docker/socket\n    Or: tcp:host:port")
 	pflag.StringVar(&listenAddr, "listen", "unix:/run/procschd.sock", "Either: unix:/path/to/bind/point\n    Or: tcp:addr:port")
-	pflag.StringVar(&dockerVersion, "docker-version", "", "Specify API version used by docker. Leave empty for latest.")
+	pflag.StringVar(&dockerApiVersion, "docker-api-version", "", "Specify API version used by docker. Leave empty for latest.")
 	pflag.StringVar(&authToken, "auth-token", "", "An optional string. If specified, clients connecting to this server must present the header Authorization: Bearer <token>\n"+
 		"Alternatively, an environment variable PROCSCHD_AUTH_TOKEN can be used.")
 	pflag.Parse()
@@ -40,7 +41,7 @@ func main() {
 	if authToken != "" {
 		log.Printf("Requiring Authentication.")
 	}
-	dockercli, err := initDockerClient(dockerAddr, dockerVersion)
+	dockercli, err := initDockerClient(dockerAddr, dockerApiVersion)
 	if err != nil {
 		log.Fatalf("When creating docker client: " + err.Error())
 	}
