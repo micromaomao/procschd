@@ -38,4 +38,16 @@ script:
     sudo docker build . -f bash.Dockerfile -t runner/bash &&
     sudo docker build . -f demo.Dockerfile -t runner/demo &&
     cd $PROJECT_ROOT/clients/node &&
-    npm run test;
+    npm run test &&
+    cd $PROJECT_ROOT; #
+
+deploy:
+  - provider: script
+    on:
+      branch: master
+    skip_cleanup: true
+    script:
+      - >
+        npm --loglevel=error config set //registry.npmjs.org/:_authToken "$NPM_TOKEN" &&
+        cd clients/node &&
+        npm publish; #
