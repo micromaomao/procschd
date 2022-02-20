@@ -1,4 +1,5 @@
 import * as http from 'http';
+import * as https from 'https';
 import { Readable, Writable } from 'stream';
 import { URL } from 'url';
 import { ArtifactNotFoundError, ImageNotFoundError, SomethingNotFoundError, TaskNotCompletedError, TaskNotFoundError } from './errors';
@@ -25,18 +26,28 @@ interface Upload {
 }
 
 export class ProcschdServer {
-  protected httpAgent: http.Agent
+  protected httpAgent: http.Agent | https.Agent
   protected mode: "tcp" | "unix"
+  protected protocol: "http" | "https"
   protected baseUrl: URL | null = null
   protected socketPath: string | null = null
   protected authToken: string = ""
 
-  protected constructor(mode: "tcp" | "unix") {
-    this.httpAgent = new http.Agent({
-      keepAlive: true,
-      maxSockets: Infinity,
-      timeout: 1000
-    })
+  protected constructor(mode: "tcp" | "unix", proto: "http" | "https") {
+    this.protocol = proto
+    if (proto == "https") {
+      this.httpAgent = new https.Agent({
+        keepAlive: true,
+        maxSockets: Infinity,
+        timeout: 1000
+      })
+    } else {
+      this.httpAgent = new http.Agent({
+        keepAlive: true,
+        maxSockets: Infinity,
+        timeout: 1000
+      })
+    }
     this.mode = mode
   }
 
@@ -46,10 +57,14 @@ export class ProcschdServer {
    * @param authToken the string passed as --auth-token to the server. Default: ""
    */
   static async connect(baseUrl: URL | string, authToken: string = ""): Promise<ProcschdServer> {
-    let schd = new ProcschdServer("tcp")
     if (typeof baseUrl === "string") {
       baseUrl = new URL(baseUrl)
     }
+    let protocol = baseUrl.protocol.replace(/:$/, "");
+    if (protocol != "http" && protocol != "https") {
+      throw new Error("Invalid protocol.");
+    }
+    let schd = new ProcschdServer("tcp", protocol);
     schd.baseUrl = baseUrl
     schd.authToken = authToken
     await schd.stat()
@@ -62,7 +77,7 @@ export class ProcschdServer {
    * @param authToken the string passed as --auth-token to the server. Default: ""
    */
   static async unixConnect(socketPath: string = "/run/procschd.sock", authToken: string = ""): Promise<ProcschdServer> {
-    let schd = new ProcschdServer("unix")
+    let schd = new ProcschdServer("unix", "http")
     schd.socketPath = socketPath
     schd.authToken = authToken
     await schd.stat()
@@ -74,6 +89,7 @@ export class ProcschdServer {
    */
   request(path: string, options: http.RequestOptions, callback?: (res: http.IncomingMessage) => void): http.ClientRequest {
     options = Object.assign({}, options)
+    options.agent = this.httpAgent;
     options.headers = options.headers || {}
     if (this.authToken.length > 0) {
       options.headers["authorization"] = "Bearer " + this.authToken
@@ -85,7 +101,11 @@ export class ProcschdServer {
       case "tcp":
         if (this.baseUrl === null) throw "!"
         let realUrl = new URL(path, this.baseUrl)
-        return http.request(realUrl, options, callback)
+        if (this.protocol == "http") {
+          return http.request(realUrl, options, callback)
+        } else {
+          return https.request(realUrl, options, callback)
+        }
         break
       case "unix":
         if (this.socketPath === null) throw "!"
@@ -273,7 +293,7 @@ export class ProcschdServer {
           ended = true
           reject(err)
         })
-        readable.pipe(req, {end: false})
+        readable.pipe(req, { end: false })
       })
     }
     async function writeFormValue(name: string, value: string | Buffer) {
