@@ -6,11 +6,10 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
-	"github.com/Workiva/go-datastructures/queue"
-	dockerClient "github.com/docker/docker/client"
 	"io"
 	"io/ioutil"
 	"log"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"runtime"
@@ -19,6 +18,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Workiva/go-datastructures/queue"
+	dockerClient "github.com/docker/docker/client"
 )
 
 type Server struct {
@@ -383,7 +385,6 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 				}
 			}
 			t := s.newTask()
-			defer t.lock.Unlock()
 			t.imageId = imageId
 			t.artifacts = artifacts
 			t.stdin = stdin
@@ -392,12 +393,22 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			}
 			if uploadsArr != nil {
 				t.uploads_lock.Lock()
-				defer t.uploads_lock.Unlock()
 				for _, uploadFile := range uploadsArr {
-					path := uploadFile.Filename
+					_, params, err := mime.ParseMediaType(uploadFile.Header.Get("Content-Disposition"))
+					if err != nil {
+						rw.WriteHeader(400)
+						rw.Write([]byte("Failed to parse Content-Disposition"))
+						t.uploads_lock.Unlock()
+						t.lock.Unlock()
+						t.cleanup()
+						return
+					}
+					path := params["filename"]
 					if len(path) == 0 || path[0] != '/' {
 						rw.WriteHeader(400)
 						rw.Write([]byte("Paths must be absolute."))
+						t.uploads_lock.Unlock()
+						t.lock.Unlock()
 						t.cleanup()
 						return
 					}
@@ -405,6 +416,8 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 					if err != nil {
 						rw.WriteHeader(500)
 						rw.Write([]byte(err.Error()))
+						t.uploads_lock.Unlock()
+						t.lock.Unlock()
 						t.cleanup()
 						return
 					}
@@ -414,11 +427,13 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 						length: uploadFile.Size,
 					})
 				}
+				t.uploads_lock.Unlock()
 			}
 			err := s.taskQueue.Put(t)
 			if err != nil {
 				rw.WriteHeader(500)
 				rw.Write([]byte(err.Error()))
+				t.lock.Unlock()
 				return
 			}
 			log.Printf("Created task %v running %v", t.id, t.imageId)
@@ -426,6 +441,7 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 			rw.Header()["Content-Type"] = []string{"text/plain"}
 			rw.WriteHeader(200)
 			rw.Write([]byte(strconv.FormatUint(t.id, 10)))
+			t.lock.Unlock()
 			return
 		} else {
 			rw.WriteHeader(404)

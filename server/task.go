@@ -4,9 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/pkg/stdcopy"
 	"io"
 	"log"
 	"os"
@@ -14,6 +11,10 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/pkg/stdcopy"
 )
 
 type Task struct {
@@ -338,7 +339,7 @@ func (t *Task) createContainer(ctx context.Context) (err error) {
 			NanoCPUs:   1000000000, // 10^9 nCPUs = 1 CPU. This is not some sort of time limit, but limit on how many CPUs to allocate to the container.
 			PidsLimit:  &ten,
 		},
-	}, nil, "")
+	}, nil, nil, "")
 	if err != nil {
 		return
 	}
