@@ -1,0 +1,32 @@
+name: Build
+on: [push, pull_request]
+jobs:
+  Build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - run: docker build . -t ghcr.io/micromaomao/procschd
+      - run: >
+          cd images &&
+          docker build -f bash.Dockerfile . -t runner/bash &&
+          docker build -f demo.Dockerfile . -t runner/demo &&
+          cd ..
+      - run: >
+          docker run --detach -v /var/run/docker.sock:/var/run/docker.sock -u 0:0 --network host ghcr.io/micromaomao/procschd --listen tcp:127.0.0.1:3000
+      - run: >
+          cd clients/node &&
+          npm i &&
+          export HTTP_URL=127.0.0.1:3000 &&
+          npm run test &&
+          cd ../..
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v1
+        if: ${{ github.event_name == 'push' && github.ref_name == 'master' }}
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: >
+          docker tag ghcr.io/micromaomao/procschd "ghcr.io/micromaomao/procschd:$GITHUB_SHA" &&
+          docker push "ghcr.io/micromaomao/procschd:$GITHUB_SHA" &&
+          docker push ghcr.io/micromaomao/procschd
