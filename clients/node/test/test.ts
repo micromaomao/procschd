@@ -97,7 +97,7 @@ itOverServers('Should error for non-existing images', async s => {
     if (e instanceof ImageNotFoundError) {
       return // good
     } else {
-      throw new Error("Image lookup failed with error " + e.toString())
+      throw new Error("Image lookup failed with error " + e)
     }
   }
   throw new Error("No error thrown")
@@ -110,7 +110,7 @@ itOverServers('/task should 404 for non-existing tasks', async s => {
     if (e instanceof TaskNotFoundError) {
       return
     } else {
-      throw new Error("Task lookup failed with error " + e.toString())
+      throw new Error("Task lookup failed with error " + e)
     }
   }
   throw new Error("No error thrown")
@@ -123,7 +123,7 @@ itOverServers('/task/artifact should 404 for non-existing tasks with response = 
     if (e instanceof TaskNotFoundError) {
       return
     } else {
-      throw new Error("Artifact download failed with error " + e.toString())
+      throw new Error("Artifact download failed with error " + e)
     }
   }
   throw new Error("No error thrown")
@@ -159,7 +159,7 @@ itOverServers('/task/artifact should 404 for non-existing artifacts on existing 
     if (e instanceof ArtifactNotFoundError) {
       return
     } else {
-      throw new Error("Artifact download failed with error " + e.toString())
+      throw new Error("Artifact download failed with error " + e)
     }
   }
   throw new Error("No error thrown")
