@@ -310,7 +310,7 @@ itOverServers('non-zero exit code should cause error', async s => {
 })
 
 itOverServers('timeout should cause error', async function (s) {
-  this.timeout(30000)
+  this.timeout(70000)
   let info = await s.taskInfo(await s.runTask({
     imageId: "runner/bash",
     stdin: "sleep 100"
