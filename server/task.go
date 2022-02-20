@@ -77,7 +77,7 @@ func (t *Task) do(ctx context.Context) {
 		t.lock.Unlock()
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, time.Second*20)
+	ctx, cancel := context.WithTimeout(ctx, time.Second*60)
 	t.startTime = time.Now()
 	t.started = true
 	t.cancelFunc = cancel
